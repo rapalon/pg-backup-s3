@@ -1,0 +1,99 @@
+# Example deployment: PostgreSQL plus pgbackup next to it, backing up every
+# database on a schedule to an S3-compatible bucket. Works as is after the
+# four secret files below exist; adjust the S3_* values and the schedule.
+#
+#   mkdir -p secrets
+#   echo 'my-db-password'  > secrets/pgpassword
+#   age-keygen -o /somewhere/safe/backup-key.txt      # prints the public key
+#   echo 'age1...'         > secrets/age_recipients   # the PUBLIC key only
+#   echo 'AKIA...'         > secrets/s3_access_key
+#   echo '...'             > secrets/s3_secret_key
+#   docker compose -f compose.example.yml up -d
+#   docker compose -f compose.example.yml exec pgbackup pgbackup backup   # first backup by hand
+#   docker compose -f compose.example.yml exec pgbackup pgbackup list
+#
+# Only public key material enters the backup container. The private key stays
+# with whoever restores (see RUNBOOK.md). Restoring runs the same image with
+# AGE_IDENTITY_FILE instead of AGE_RECIPIENTS_FILE, for example:
+#
+#   docker compose -f compose.example.yml run --rm \
+#     -v /somewhere/safe/backup-key.txt:/run/secrets/key:ro -e AGE_IDENTITY_FILE=/run/secrets/key \
+#     pgbackup verify --db app --full
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/pgpassword
+      POSTGRES_DB: app # the database this example backs up; add more with createdb
+    volumes:
+      - pgdata:/var/lib/postgresql
+    secrets:
+      - pgpassword
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgbackup:
+    # Tag = PostgreSQL major of the client tools; must be >= the server's.
+    # Local build instead: `make docker-build` → image: pgbackup:18
+    image: ghcr.io/rapalon/pg-backup-s3:18
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      # State directory (heartbeat) lives here; also the only writable place
+      # for `restore --jobs N --spool-dir /tmp`, so size it for that if needed:
+      # - /tmp:size=4g
+      - /tmp
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD_FILE: /run/secrets/pgpassword
+      PGDATABASE: postgres # maintenance database; PGUSER needs CONNECT on it
+      PGSSLMODE: prefer
+      CLUSTER_NAME: prod
+      # Every database except the maintenance one: here that is `app` only.
+      BACKUP_DATABASES: all
+      BACKUP_EXCLUDE_DATABASES: postgres
+      BACKUP_SCHEDULE: "0 3 * * *"
+      BACKUP_TZ: Europe/Zurich
+      RUN_ON_START: "false"
+      AGE_RECIPIENTS_FILE: /run/secrets/age_recipients
+      S3_ENDPOINT: https://s3.example.com
+      S3_REGION: us-east-1
+      S3_BUCKET: db-backups
+      S3_PREFIX: pgbackup
+      S3_ACCESS_KEY_FILE: /run/secrets/s3_access_key
+      S3_SECRET_KEY_FILE: /run/secrets/s3_secret_key
+      RETENTION_KEEP_LAST: "7"
+      RETENTION_KEEP_DAILY: "14"
+      RETENTION_KEEP_WEEKLY: "8"
+      RETENTION_KEEP_MONTHLY: "12"
+      METRICS_ADDR: ":9090"
+      # NOTIFY_URL_SUCCESS: https://hc-ping.com/<uuid>
+      # NOTIFY_URL_FAILURE: https://hc-ping.com/<uuid>/fail
+    ports:
+      - "127.0.0.1:9090:9090" # /healthz and /metrics
+    secrets:
+      - pgpassword
+      - age_recipients
+      - s3_access_key
+      - s3_secret_key
+
+secrets:
+  pgpassword:
+    file: ./secrets/pgpassword
+  age_recipients:
+    file: ./secrets/age_recipients
+  s3_access_key:
+    file: ./secrets/s3_access_key
+  s3_secret_key:
+    file: ./secrets/s3_secret_key
+
+volumes:
+  pgdata:
