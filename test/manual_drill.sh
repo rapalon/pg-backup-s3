@@ -38,7 +38,7 @@ $COMPOSE run --rm --no-deps -T -e AGE_IDENTITY="$IDENTITY" -e PREFIX="$PREFIX" t
 set -eu
 apk add --no-cache zstd >/dev/null 2>&1
 export PGHOST=postgres PGUSER=test PGPASSWORD=test PGSSLMODE=disable
-(cd /src && go build -o /tmp/s3check ./test/s3check)   # the stand-in for "any S3 client"
+(cd /src && go build -buildvcs=false -o /tmp/s3check ./test/s3check)   # the stand-in for "any S3 client"
 cd "$(mktemp -d)"
 printf '%s\n' "$AGE_IDENTITY" > key.txt
 

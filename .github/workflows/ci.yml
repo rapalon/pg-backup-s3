@@ -70,6 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Stand + go test -tags integration
+        shell: bash # explicit: GitHub only sets -o pipefail for `shell: bash`, and the tee must not hide make's exit status
         run: make test-integration PG_MAJOR=${{ matrix.pg }} 2>&1 | tee integration.log
       # Job logs need admin rights to read through the API; annotations do not.
       # On failure, surface the failing tests and the log tail as annotations.
@@ -126,6 +127,7 @@ jobs:
           exit-code: "1"
           ignore-unfixed: true
       - name: Smoke test with a read-only root filesystem
+        shell: bash
         run: make test-image PG_MAJOR=18 2>&1 | tee smoke.log
       - name: Failure summary as annotations
         if: failure()

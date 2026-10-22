@@ -1,0 +1,13 @@
+# Keep the build context small and free of host state. Without .git the Go
+# build embeds no VCS stamp instead of failing on ownership checks.
+.git
+.github
+bin/
+dist/
+coverage.*
+*.test
+secrets/
+spool/
+state/
+.idea/
+.vscode/

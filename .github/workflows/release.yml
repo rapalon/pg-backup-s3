@@ -28,6 +28,7 @@ jobs:
       - run: go test -race -count=1 ./...
       - run: make vuln
       - name: Stand + go test -tags integration
+        shell: bash # pipefail, so the tee cannot hide make's exit status
         run: make test-integration PG_MAJOR=18 2>&1 | tee integration.log
       - name: Summary as annotations
         if: always()

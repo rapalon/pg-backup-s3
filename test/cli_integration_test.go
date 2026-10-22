@@ -25,7 +25,9 @@ func buildBinary(t *testing.T) string {
 		t.Skip("PGBACKUP_INTEGRATION != 1; run via test/compose.yml")
 	}
 	bin := filepath.Join(t.TempDir(), "pgbackup")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/pgbackup")
+	// -buildvcs=false: in CI the checkout is mounted into the container with a
+	// foreign owner and git refuses to report VCS status, which would fail the build.
+	cmd := exec.Command("go", "build", "-buildvcs=false", "-o", bin, "./cmd/pgbackup")
 	cmd.Dir = ".."
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
