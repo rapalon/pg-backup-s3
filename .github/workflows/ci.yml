@@ -78,7 +78,7 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v3
       - name: Bake all majors for amd64 and arm64
         uses: docker/bake-action@v7
