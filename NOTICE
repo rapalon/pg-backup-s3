@@ -1,0 +1,15 @@
+pgbackup (pg-backup-s3)
+Copyright 2026 Rapalon Labs, Inc.
+
+This product is licensed under the Apache License, Version 2.0; see LICENSE.
+
+It links the following third-party Go modules, each under its own license:
+
+  filippo.io/age                      BSD-3-Clause
+  github.com/aws/aws-sdk-go-v2        Apache-2.0
+  github.com/aws/smithy-go            Apache-2.0
+  github.com/klauspost/compress       BSD-3-Clause (parts Apache-2.0 / MIT)
+  github.com/robfig/cron/v3           MIT
+
+The container image additionally contains Alpine Linux packages, including
+the PostgreSQL client tools (PostgreSQL License).

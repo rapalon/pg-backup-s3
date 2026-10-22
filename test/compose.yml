@@ -1,0 +1,97 @@
+# Integration test stand: PostgreSQL + Garage (S3) + a test runner with pg_dump installed.
+# Run with:  make test-integration   (or PG_MAJOR=17 make test-integration)
+
+name: pgbackup-test
+
+x-garage-key: &garage-key
+  # Fixed test credentials, imported into Garage by garage-init. Public by design.
+  GARAGE_KEY_ID: GK0123456789abcdef01234567
+  GARAGE_KEY_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+services:
+  postgres:
+    image: postgres:${PG_MAJOR:-18}-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    # PG 18+ images keep data in a version-specific subdirectory and refuse a
+    # mount at .../data; mounting the parent works for 16, 17 and 18 alike.
+    tmpfs:
+      - /var/lib/postgresql
+
+  # Garage (https://garagehq.deuxfleurs.fr) is the S3 server of the stand: a
+  # 39 MB image, single static binary, multipart + ListMultipartUploads +
+  # AbortIncompleteMultipartUpload lifecycle. It has no Object Lock or tagging,
+  # so tests for those are skipped on the stand.
+  garage:
+    image: dxflrs/garage:v2.1.0
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      # Named volume, not tmpfs: the CLI in garage-init needs the node key the
+      # server writes into metadata_dir. `down -v` wipes it between runs.
+      - garage-data:/var/lib/garage
+
+  # The garage image has no shell, so initialisation runs from a tiny helper
+  # image that borrows the garage binary, shares the server's network
+  # namespace (the CLI talks to 127.0.0.1:3901) and its metadata volume.
+  garage-init:
+    build:
+      context: ./garage
+      dockerfile_inline: |
+        FROM alpine:3.24
+        COPY --from=dxflrs/garage:v2.1.0 /garage /usr/local/bin/garage
+        COPY init.sh /init.sh
+        RUN chmod +x /init.sh
+        ENTRYPOINT ["/init.sh"]
+    network_mode: "service:garage"
+    depends_on:
+      - garage
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage-data:/var/lib/garage
+    environment:
+      <<: *garage-key
+      GARAGE_BUCKET: pgbackup-test
+
+  tests:
+    build:
+      context: ..
+      target: test
+      args:
+        PG_MAJOR: ${PG_MAJOR:-18}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: test
+      PGPASSWORD: test
+      PGDATABASE: test
+      PGSSLMODE: disable
+      S3_ENDPOINT: http://garage:3900
+      S3_REGION: us-east-1
+      S3_BUCKET: pgbackup-test
+      S3_ACCESS_KEY: GK0123456789abcdef01234567
+      S3_SECRET_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      S3_PATH_STYLE: "true"
+      PGBACKUP_INTEGRATION: "1"
+    volumes:
+      - ..:/src
+      - gomod:/go/pkg/mod
+      - gocache:/root/.cache/go-build
+    working_dir: /src
+    command: ["go", "test", "-tags", "integration", "-count=1", "./..."]
+
+volumes:
+  gomod:
+  gocache:
+  garage-data:

@@ -1,0 +1,24 @@
+# build output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+
+# local secrets and environment
+.env
+.env.*
+*.key
+*.age-identity
+/secrets/
+
+# restore spool and state
+/spool/
+/state/
+
+# editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
