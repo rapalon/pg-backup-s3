@@ -78,11 +78,13 @@ CID="$(docker run -d --network pgbackup-test_default --read-only --tmpfs /tmp:ui
     -e S3_PREFIX="$PREFIX" -e CLUSTER_NAME=smoke -e BACKUP_SCHEDULE="0 3 * * *" -e RUN_ON_START=true \
     -e AGE_RECIPIENTS="$RECIPIENT" -e LOG_FORMAT=text -e METRICS_ADDR=:9090 \
     "$IMAGE" serve)"
-for i in $(seq 1 60); do
-  if docker exec "$CID" pgbackup health >/dev/null 2>&1; then break; fi
+# health is green from the process start on (that is by design), so wait for
+# the RUN_ON_START backup itself: health then reports the last success.
+for i in $(seq 1 90); do
+  if docker exec "$CID" pgbackup health 2>/dev/null | grep -q 'last successful backup'; then break; fi
   sleep 1
 done
-docker exec "$CID" pgbackup health
+docker exec "$CID" pgbackup health | grep 'last successful backup'
 docker exec "$CID" wget -qO- http://127.0.0.1:9090/metrics | grep 'pgbackup_runs_total{result="success"} 1'
 docker stop -t 30 "$CID" >/dev/null
 EXIT="$(docker inspect "$CID" --format '{{.State.ExitCode}}')"
