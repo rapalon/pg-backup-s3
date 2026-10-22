@@ -27,7 +27,18 @@ jobs:
       - run: make lint
       - run: go test -race -count=1 ./...
       - run: make vuln
-      - run: make test-integration PG_MAJOR=18
+      - name: Stand + go test -tags integration
+        run: make test-integration PG_MAJOR=18 2>&1 | tee integration.log
+      - name: Summary as annotations
+        if: always()
+        run: |
+          enc() { perl -pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g'; }
+          summary="$(grep -E '^(ok  |FAIL|---|\?)|_test\.go:[0-9]+:' integration.log | head -80 | head -c 3800 | enc)"
+          echo "::notice title=Integration — go test summary::${summary:-no go test output found}"
+          if [ "${{ job.status }}" != "success" ]; then
+            tail="$(tail -n 80 integration.log | tail -c 3800 | enc)"
+            echo "::error title=Integration — log tail::${tail}"
+          fi
 
   publish:
     name: Build, push, sign

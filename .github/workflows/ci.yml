@@ -73,14 +73,16 @@ jobs:
         run: make test-integration PG_MAJOR=${{ matrix.pg }} 2>&1 | tee integration.log
       # Job logs need admin rights to read through the API; annotations do not.
       # On failure, surface the failing tests and the log tail as annotations.
-      - name: Failure summary as annotations
-        if: failure()
+      - name: Summary as annotations
+        if: always()
         run: |
           enc() { perl -pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g'; }
-          fails="$(grep -E '^(--- FAIL|FAIL|panic:|ok  )|_test\.go:[0-9]+:' integration.log | head -60 | head -c 3800 | enc)"
-          tail="$(tail -n 80 integration.log | tail -c 3800 | enc)"
-          echo "::error title=Integration PG ${{ matrix.pg }} — failing tests::${fails:-none matched}"
-          echo "::error title=Integration PG ${{ matrix.pg }} — log tail::${tail}"
+          summary="$(grep -E '^(ok  |FAIL|---|\?|=== RUN)|_test\.go:[0-9]+:|no test files|skipped' integration.log | head -80 | head -c 3800 | enc)"
+          echo "::notice title=Integration PG ${{ matrix.pg }} — go test summary::${summary:-no go test output found}"
+          if [ "${{ job.status }}" != "success" ]; then
+            tail="$(tail -n 80 integration.log | tail -c 3800 | enc)"
+            echo "::error title=Integration PG ${{ matrix.pg }} — log tail::${tail}"
+          fi
 
   build:
     name: Build matrix (no push)
