@@ -70,7 +70,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Stand + go test -tags integration
-        run: make test-integration PG_MAJOR=${{ matrix.pg }}
+        run: make test-integration PG_MAJOR=${{ matrix.pg }} 2>&1 | tee integration.log
+      # Job logs need admin rights to read through the API; annotations do not.
+      # On failure, surface the failing tests and the log tail as annotations.
+      - name: Failure summary as annotations
+        if: failure()
+        run: |
+          enc() { perl -pe 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g'; }
+          fails="$(grep -E '^(--- FAIL|FAIL|panic:|ok  )|_test\.go:[0-9]+:' integration.log | head -60 | head -c 3800 | enc)"
+          tail="$(tail -n 80 integration.log | tail -c 3800 | enc)"
+          echo "::error title=Integration PG ${{ matrix.pg }} — failing tests::${fails:-none matched}"
+          echo "::error title=Integration PG ${{ matrix.pg }} — log tail::${tail}"
 
   build:
     name: Build matrix (no push)
@@ -106,7 +116,7 @@ jobs:
       - name: Size gate
         run: make image-size PG_MAJOR=18
       - name: Trivy scan (fail on HIGH/CRITICAL)
-        uses: aquasecurity/trivy-action@0.33.1
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pgbackup:18
           format: table

@@ -43,9 +43,13 @@ lint:
 vuln:
 	$(GOVULNCHECK) ./...
 
+# On failure the stand's own logs are printed before teardown, so a broken
+# Garage or PostgreSQL start is visible in CI output.
 test-integration:
 	PG_MAJOR=$(PG_MAJOR) $(COMPOSE) build tests
 	PG_MAJOR=$(PG_MAJOR) $(COMPOSE) run --rm tests; status=$$?; \
+	if [ $$status -ne 0 ]; then echo "=== stand logs (garage-init, garage, postgres)"; \
+	  PG_MAJOR=$(PG_MAJOR) $(COMPOSE) logs --no-color --tail 40 garage-init garage postgres; fi; \
 	PG_MAJOR=$(PG_MAJOR) $(COMPOSE) down -v --remove-orphans; exit $$status
 
 docker-build:
