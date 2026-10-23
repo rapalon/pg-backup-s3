@@ -23,6 +23,10 @@ type Plan struct {
 	DropForce bool // server supports DROP DATABASE ... WITH (FORCE)
 	CreateDB  bool
 	Owner     string
+	// ClusterDB is the database the cluster-level statements (terminate
+	// sessions, DROP/CREATE DATABASE, globals) connect to when PGDATABASE
+	// itself is the database being dropped or created; empty otherwise.
+	ClusterDB string
 
 	Restore   pg.RestoreOptions
 	Jobs      int
@@ -41,6 +45,44 @@ type Plan struct {
 
 func refuse(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrRefused, fmt.Sprintf(format, args...))
+}
+
+// clusterDBCandidates are tried, in order, when PGDATABASE names the database
+// that the restore drops or creates: PostgreSQL refuses to drop the database
+// a session is connected to, so the statements must run from another one.
+var clusterDBCandidates = []string{"postgres", "template1"}
+
+// clusterConn is the connection for cluster-level statements: deps.Conn,
+// pointed at ClusterDB when Preflight had to choose another database.
+func (p Plan) clusterConn(deps Deps) pg.Conn {
+	conn := deps.Conn
+	if p.ClusterDB != "" {
+		conn.Database = p.ClusterDB
+	}
+	return conn
+}
+
+// alternativeClusterDB finds a database other than target that accepts a
+// connection, proving it the same way Preflight proves the server: by asking
+// for its version. No candidate connectable is a refusal naming PGDATABASE.
+func alternativeClusterDB(ctx context.Context, deps Deps, target string) (string, error) {
+	var failures []string
+	for _, db := range clusterDBCandidates {
+		if db == target {
+			continue
+		}
+		conn := deps.Conn
+		conn.Database = db
+		if _, err := deps.DB.ServerVersion(ctx, conn); err == nil {
+			return db, nil
+		} else if ctx.Err() != nil {
+			return "", err
+		} else {
+			failures = append(failures, fmt.Sprintf("%q: %v", db, err))
+		}
+	}
+	return "", refuse("PGDATABASE=%q is the database to drop or create, and the cluster-level statements cannot run from %s; set PGDATABASE to another database on this server",
+		target, strings.Join(failures, ", "))
 }
 
 // Preflight validates everything that can be validated before downloading
@@ -90,7 +132,18 @@ func Preflight(ctx context.Context, deps Deps, entry manifest.Entry, opts Option
 	if client.Major < dumpVersion.Major {
 		return Plan{}, refuse("pg_restore %s cannot read an archive written by pg_dump %s; use the image tagged for PostgreSQL %d", client, dumpVersion, dumpVersion.Major)
 	}
-	server, err := deps.DB.ServerVersion(ctx, deps.Conn)
+	// The maintenance database cannot be the one that is dropped or created:
+	// choose another one for the cluster-level statements before the first
+	// connection, since PGDATABASE may not even exist yet (--create).
+	conn := deps.Conn
+	if conn.MaintenanceDB() == plan.TargetDB && (opts.DropExisting || opts.Create) {
+		alt, err := alternativeClusterDB(ctx, deps, plan.TargetDB)
+		if err != nil {
+			return Plan{}, err
+		}
+		conn.Database, plan.ClusterDB = alt, alt
+	}
+	server, err := deps.DB.ServerVersion(ctx, conn)
 	if err != nil {
 		return Plan{}, fmt.Errorf("target server: %w", err)
 	}
@@ -103,7 +156,7 @@ func Preflight(ctx context.Context, deps Deps, entry manifest.Entry, opts Option
 	plan.DropForce = server.Major >= 13
 
 	// 4. Target database state.
-	exists, err := deps.DB.DatabaseExists(ctx, deps.Conn, plan.TargetDB)
+	exists, err := deps.DB.DatabaseExists(ctx, conn, plan.TargetDB)
 	if err != nil {
 		return Plan{}, fmt.Errorf("checking database %q: %w", plan.TargetDB, err)
 	}
@@ -120,7 +173,7 @@ func Preflight(ctx context.Context, deps Deps, entry manifest.Entry, opts Option
 			fmt.Sprintf("terminate sessions and drop database %q", plan.TargetDB),
 			fmt.Sprintf("create database %q", plan.TargetDB))
 	default:
-		n, err := deps.DB.UserObjectCount(ctx, deps.Conn, plan.TargetDB)
+		n, err := deps.DB.UserObjectCount(ctx, conn, plan.TargetDB)
 		if err != nil {
 			return Plan{}, fmt.Errorf("inspecting database %q: %w", plan.TargetDB, err)
 		}
@@ -130,6 +183,15 @@ func Preflight(ctx context.Context, deps Deps, entry manifest.Entry, opts Option
 		if n == 0 && opts.Clean {
 			plan.Warnings = append(plan.Warnings, fmt.Sprintf("database %q is empty; --clean has nothing to drop", plan.TargetDB))
 		}
+	}
+	switch {
+	case plan.ClusterDB != "" && !plan.DropDB && !plan.CreateDB:
+		// --create on a database that exists: nothing is dropped or created,
+		// so the maintenance database stays as configured.
+		plan.ClusterDB = ""
+	case plan.ClusterDB != "":
+		log.Info("PGDATABASE is the target database; cluster-level statements run from another one",
+			"target", plan.TargetDB, "cluster_db", plan.ClusterDB)
 	}
 
 	// 5. Spool directory and free space.
@@ -162,7 +224,7 @@ func Preflight(ctx context.Context, deps Deps, entry manifest.Entry, opts Option
 			return Plan{}, refuse("backup %s has no globals object to restore", m.Key)
 		}
 		plan.Globals, plan.GlobalsKey = true, m.GlobalsKey
-		plan.Actions = append([]string{fmt.Sprintf("restore roles and tablespaces from %s into %q", m.GlobalsKey, deps.Conn.MaintenanceDB())}, plan.Actions...)
+		plan.Actions = append([]string{fmt.Sprintf("restore roles and tablespaces from %s into %q", m.GlobalsKey, plan.clusterConn(deps).MaintenanceDB())}, plan.Actions...)
 	}
 
 	plan.Restore = pg.RestoreOptions{
@@ -227,6 +289,9 @@ func (p Plan) Describe() string {
 	fmt.Fprintf(&b, "Created:  %s  (%s, pg_dump %s, server %s, %d bytes, %s)\n",
 		m.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"), m.Database, m.PgDumpVersion, m.ServerVersion, m.SizeBytes, m.Compression)
 	fmt.Fprintf(&b, "Target:   database %q on the configured server (server %s, pg_restore %s)\n", p.TargetDB, p.ServerVersion, p.ClientVersion)
+	if p.ClusterDB != "" {
+		fmt.Fprintf(&b, "Via:      database %q for DROP/CREATE DATABASE, because PGDATABASE names the target\n", p.ClusterDB)
+	}
 	b.WriteString("Actions:\n")
 	for i, a := range p.Actions {
 		fmt.Fprintf(&b, "  %d. %s\n", i+1, a)

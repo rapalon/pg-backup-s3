@@ -44,6 +44,12 @@ type fakeDB struct {
 	listErr       error
 	tocOverride   string
 	userObjects   int // reported for databases not in objects
+	// unreachable databases refuse every connection (ServerVersion fails for
+	// a Conn whose maintenance database is listed).
+	unreachable map[string]bool
+	// adminDBs records the maintenance database each cluster-level call
+	// (terminate, drop, create, script) connected to, in order.
+	adminDBs []string
 }
 
 func newFakeDB() *fakeDB {
@@ -62,8 +68,18 @@ func (f *fakeDB) record(format string, args ...any) {
 }
 
 func (f *fakeDB) ClientVersion(context.Context, string) (pg.Version, error) { return f.client, nil }
-func (f *fakeDB) ServerVersion(context.Context, pg.Conn) (pg.Version, error) {
+func (f *fakeDB) ServerVersion(_ context.Context, conn pg.Conn) (pg.Version, error) {
+	if f.unreachable[conn.MaintenanceDB()] {
+		return pg.Version{}, &pg.ExitError{Binary: "psql", Code: 2,
+			StderrTail: fmt.Sprintf("psql: error: connection to server failed: FATAL:  database %q does not exist\n", conn.MaintenanceDB())}
+	}
 	return f.server, nil
+}
+
+func (f *fakeDB) admin(conn pg.Conn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.adminDBs = append(f.adminDBs, conn.MaintenanceDB())
 }
 func (f *fakeDB) DatabaseExists(_ context.Context, _ pg.Conn, db string) (bool, error) {
 	return f.exists[db], nil
@@ -75,11 +91,13 @@ func (f *fakeDB) UserObjectCount(_ context.Context, _ pg.Conn, db string) (int, 
 	}
 	return f.userObjects, nil
 }
-func (f *fakeDB) TerminateConnections(_ context.Context, _ pg.Conn, db string) error {
+func (f *fakeDB) TerminateConnections(_ context.Context, conn pg.Conn, db string) error {
+	f.admin(conn)
 	f.record("terminate %s", db)
 	return nil
 }
-func (f *fakeDB) CreateDatabase(_ context.Context, _ pg.Conn, db, owner string) error {
+func (f *fakeDB) CreateDatabase(_ context.Context, conn pg.Conn, db, owner string) error {
+	f.admin(conn)
 	f.record("create %s owner=%q", db, owner)
 	if f.createErr != nil {
 		return f.createErr
@@ -87,7 +105,8 @@ func (f *fakeDB) CreateDatabase(_ context.Context, _ pg.Conn, db, owner string) 
 	f.exists[db] = true
 	return nil
 }
-func (f *fakeDB) DropDatabase(_ context.Context, _ pg.Conn, db string, force bool) error {
+func (f *fakeDB) DropDatabase(_ context.Context, conn pg.Conn, db string, force bool) error {
+	f.admin(conn)
 	f.record("drop %s force=%v", db, force)
 	delete(f.exists, db)
 	return nil
@@ -121,7 +140,8 @@ func (f *fakeDB) ListArchive(_ context.Context, stdin io.Reader) (string, error)
 	}
 	return ";\n; Archive created at 2026-10-22\n;\n1; 1259 TABLE public a owner\n2; 1259 TABLE public b owner\n", nil
 }
-func (f *fakeDB) RunSQLScript(_ context.Context, _ pg.Conn, db string, script io.Reader) (int, error) {
+func (f *fakeDB) RunSQLScript(_ context.Context, conn pg.Conn, db string, script io.Reader) (int, error) {
+	f.admin(conn)
 	f.record("script %s", db)
 	b, err := io.ReadAll(script)
 	f.script = b

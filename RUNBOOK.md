@@ -37,6 +37,16 @@ Replacing a database in place (only when a swap is impossible):
 pgbackup restore --db app --target-db app --drop-existing --yes
 ```
 
+This also works when `PGDATABASE` is `app` itself, as in a compose stack whose
+`postgres` image only creates the application database: pgbackup notices that
+the maintenance database is the one being dropped and runs `DROP DATABASE` /
+`CREATE DATABASE` from `postgres` (or `template1` if `postgres` refuses
+connections). The plan prints a `Via:` line naming that database; overriding
+`PGDATABASE=postgres` for the restore is not needed. If neither `postgres` nor
+`template1` accepts a connection for `PGUSER`, the restore is refused with exit
+3 and a message naming `PGDATABASE`: point it at any other database on the
+server for that run.
+
 Roles and tablespaces live in the globals object of the same run; replay them
 first on a fresh cluster (superuser):
 
@@ -132,7 +142,7 @@ Never put a private key into the backup container; it only needs public keys.
 | `backup` globals (`pg_dumpall --globals-only`) | read access to `pg_authid`: superuser, or `pg_read_all_data` plus `GRANT SELECT ON pg_authid` |
 | `restore --create`, `verify --full` | `CREATEDB` |
 | `restore` into an existing database | ownership of the database (or superuser) |
-| `restore --drop-existing` | ownership plus the right to terminate other sessions (`pg_signal_backend`) |
+| `restore --drop-existing` | ownership plus the right to terminate other sessions (`pg_signal_backend`); when `PGDATABASE` is the target, `CONNECT` on `postgres` or `template1` |
 | `restore --globals` | superuser (creates roles, sets passwords) |
 
 A minimal backup role:

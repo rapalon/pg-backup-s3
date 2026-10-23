@@ -12,6 +12,7 @@ import (
 
 	"github.com/rapalon/pg-backup-s3/internal/crypt"
 	"github.com/rapalon/pg-backup-s3/internal/manifest"
+	"github.com/rapalon/pg-backup-s3/internal/pg"
 	"github.com/rapalon/pg-backup-s3/internal/pipeline"
 )
 
@@ -36,9 +37,12 @@ func Execute(ctx context.Context, deps Deps, plan Plan) (Report, error) {
 	start := deps.now()
 	m := plan.Entry.Manifest
 	rep := Report{TargetDB: plan.TargetDB, Key: m.Key}
+	// Cluster-level statements never run over a connection to the database
+	// they drop or create; Preflight chose another one when PGDATABASE is it.
+	admin := plan.clusterConn(deps)
 
 	if plan.Globals {
-		n, err := restoreGlobals(ctx, deps, plan.GlobalsKey)
+		n, err := restoreGlobals(ctx, deps, admin, plan.GlobalsKey)
 		if err != nil {
 			return rep, fmt.Errorf("globals: %w", err)
 		}
@@ -47,16 +51,16 @@ func Execute(ctx context.Context, deps Deps, plan Plan) (Report, error) {
 	}
 
 	if plan.DropDB {
-		log.Warn("dropping database", "database", plan.TargetDB)
-		if err := deps.DB.TerminateConnections(ctx, deps.Conn, plan.TargetDB); err != nil {
+		log.Warn("dropping database", "database", plan.TargetDB, "via", admin.MaintenanceDB())
+		if err := deps.DB.TerminateConnections(ctx, admin, plan.TargetDB); err != nil {
 			return rep, fmt.Errorf("terminating sessions on %q: %w", plan.TargetDB, err)
 		}
-		if err := deps.DB.DropDatabase(ctx, deps.Conn, plan.TargetDB, plan.DropForce); err != nil {
+		if err := deps.DB.DropDatabase(ctx, admin, plan.TargetDB, plan.DropForce); err != nil {
 			return rep, fmt.Errorf("dropping %q: %w", plan.TargetDB, err)
 		}
 	}
 	if plan.CreateDB {
-		if err := deps.DB.CreateDatabase(ctx, deps.Conn, plan.TargetDB, plan.Owner); err != nil {
+		if err := deps.DB.CreateDatabase(ctx, admin, plan.TargetDB, plan.Owner); err != nil {
 			return rep, fmt.Errorf("creating %q: %w", plan.TargetDB, err)
 		}
 		log.Info("database created", "database", plan.TargetDB, "owner", plan.Owner)
@@ -191,7 +195,7 @@ func restoreSpooled(ctx context.Context, deps Deps, plan Plan, rep *Report) erro
 // restoreGlobals replays the globals SQL (roles, memberships, tablespaces)
 // through psql with ON_ERROR_STOP off. "already exists" errors are expected
 // on a cluster that is not empty; the count is returned, not an error.
-func restoreGlobals(ctx context.Context, deps Deps, key string) (int, error) {
+func restoreGlobals(ctx context.Context, deps Deps, conn pg.Conn, key string) (int, error) {
 	rc, _, err := deps.Store.Get(ctx, key)
 	if err != nil {
 		return 0, err
@@ -207,7 +211,7 @@ func restoreGlobals(ctx context.Context, deps Deps, key string) (int, error) {
 	}
 	defer zr.Close()
 	rec := &errRecorder{r: zr}
-	n, err := deps.DB.RunSQLScript(ctx, deps.Conn, deps.Conn.MaintenanceDB(), rec)
+	n, err := deps.DB.RunSQLScript(ctx, conn, conn.MaintenanceDB(), rec)
 	if rec.err != nil {
 		return n, fmt.Errorf("%w: %v", pipeline.ErrIntegrity, rec.err)
 	}

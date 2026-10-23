@@ -6,6 +6,16 @@ All notable changes to pgbackup. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `restore --drop-existing` / `--create` works when `PGDATABASE` is the target
+  database itself (e.g. a compose stack whose image only creates the
+  application database): the cluster-level statements run from `postgres`, or
+  `template1` when `postgres` refuses connections, instead of failing with
+  "cannot drop the currently open database". The plan prints a `Via:` line
+  naming that database; when neither is connectable the restore is refused
+  (exit 3) with a message naming `PGDATABASE`.
+
 ## [0.1.0] — 2026-10-22
 
 First release. Licensed under Apache-2.0; images at `ghcr.io/rapalon/pg-backup-s3`.
