@@ -160,6 +160,13 @@ func TestCLIBackup(t *testing.T) {
 	if code != 3 || !strings.Contains(stderr, "--yes") {
 		t.Errorf("drop without yes: exit %d, want 3\n%s", code, stderr)
 	}
+	// PGDATABASE names the target itself (compose stacks whose image only
+	// creates the application database): the drop runs from "postgres".
+	maintEnv := append(append([]string(nil), restoreEnv...), "PGDATABASE=test_cli_restored")
+	code, stdout, stderr = runCLI(t, bin, maintEnv, "restore", "--db", os.Getenv("PGDATABASE"), "--target-db", "test_cli_restored", "--drop-existing", "--yes")
+	if code != 0 || !strings.Contains(stdout, `Via:      database "postgres"`) || !strings.Contains(stdout, "Restored ") {
+		t.Errorf("drop-existing with PGDATABASE=target: exit %d\n%s%s", code, stdout, stderr)
+	}
 	code, _, stderr = runCLI(t, bin, env, "restore", "--db", os.Getenv("PGDATABASE"), "--target-db", "x", "--create")
 	if code != 2 || !strings.Contains(stderr, "AGE_IDENTITY or AGE_PASSPHRASE") {
 		t.Errorf("restore without identity: exit %d, want 2\n%s", code, stderr)

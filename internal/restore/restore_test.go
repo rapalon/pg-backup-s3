@@ -190,6 +190,136 @@ func TestPreflightPlans(t *testing.T) {
 	}
 }
 
+// TestPreflightClusterDBSwitch covers PGDATABASE naming the database that the
+// restore drops or creates: the cluster-level statements must run from
+// another database, chosen and proven connectable in Preflight.
+func TestPreflightClusterDBSwitch(t *testing.T) {
+	t.Parallel()
+	seed := func(t *testing.T, maintenance string) (*harness, manifest.Entry) {
+		h := newHarness(t)
+		h.deps.Conn.Database = maintenance
+		g := h.seedGlobals(t, "CREATE ROLE r;\n", fixedTime)
+		return h, h.seedDump(t, "app", testBytes(1, 1000), fixedTime, g.Manifest.Key)
+	}
+
+	t.Run("drop-existing switches to postgres", func(t *testing.T) {
+		t.Parallel()
+		h, entry := seed(t, "full")
+		plan, err := Preflight(ctx, h.deps, entry, Options{TargetDB: "full", DropExisting: true, Yes: true, Globals: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.ClusterDB != "postgres" || !plan.DropDB || !plan.CreateDB {
+			t.Errorf("plan = %+v", plan)
+		}
+		desc := plan.Describe()
+		if !strings.Contains(desc, `Via:      database "postgres"`) || !strings.Contains(desc, "PGDATABASE") || !strings.Contains(desc, `into "postgres"`) {
+			t.Errorf("Describe does not say which database the statements run from:\n%s", desc)
+		}
+		if !strings.Contains(h.logs.String(), "cluster_db=postgres") {
+			t.Error("switch not logged")
+		}
+		if _, err := Execute(ctx, h.deps, plan); err != nil {
+			t.Fatal(err)
+		}
+		if got := h.db.callList(); got != `script postgres; terminate full; drop full force=true; create full owner=""; restore full --exit-on-error` {
+			t.Errorf("calls = %s", got)
+		}
+		for _, db := range h.db.adminDBs {
+			if db != "postgres" {
+				t.Errorf("a cluster-level statement ran over %q: %v", db, h.db.adminDBs)
+			}
+		}
+	})
+
+	t.Run("create of a missing PGDATABASE switches to postgres", func(t *testing.T) {
+		t.Parallel()
+		h, entry := seed(t, "missing")
+		h.db.unreachable = map[string]bool{"missing": true}
+		plan, err := Preflight(ctx, h.deps, entry, Options{TargetDB: "missing", Create: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.ClusterDB != "postgres" || plan.DropDB || !plan.CreateDB {
+			t.Errorf("plan = %+v", plan)
+		}
+		if _, err := Execute(ctx, h.deps, plan); err != nil {
+			t.Fatal(err)
+		}
+		if len(h.db.adminDBs) != 1 || h.db.adminDBs[0] != "postgres" {
+			t.Errorf("admin statements ran over %v", h.db.adminDBs)
+		}
+	})
+
+	t.Run("template1 when postgres is unreachable", func(t *testing.T) {
+		t.Parallel()
+		h, entry := seed(t, "full")
+		h.db.unreachable = map[string]bool{"postgres": true}
+		plan, err := Preflight(ctx, h.deps, entry, Options{TargetDB: "full", DropExisting: true, Yes: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.ClusterDB != "template1" {
+			t.Errorf("ClusterDB = %q, want template1", plan.ClusterDB)
+		}
+	})
+
+	t.Run("refused when nothing else is connectable", func(t *testing.T) {
+		t.Parallel()
+		h, entry := seed(t, "full")
+		h.db.unreachable = map[string]bool{"postgres": true, "template1": true}
+		_, err := Preflight(ctx, h.deps, entry, Options{TargetDB: "full", DropExisting: true, Yes: true})
+		if !errors.Is(err, ErrRefused) {
+			t.Fatalf("err = %v, want ErrRefused", err)
+		}
+		for _, want := range []string{`PGDATABASE="full"`, `"postgres"`, `"template1"`, "does not exist"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("err %q lacks %q", err, want)
+			}
+		}
+		if len(h.db.calls) > 0 {
+			t.Errorf("refused preflight made calls: %s", h.db.callList())
+		}
+	})
+
+	t.Run("no switch without drop or create", func(t *testing.T) {
+		t.Parallel()
+		h, entry := seed(t, "full")
+		h.db.unreachable = map[string]bool{"postgres": true, "template1": true}
+		plan, err := Preflight(ctx, h.deps, entry, Options{TargetDB: "full", Clean: true})
+		if err != nil || plan.ClusterDB != "" {
+			t.Errorf("clean: %+v %v", plan, err)
+		}
+		if strings.Contains(plan.Describe(), "Via:") {
+			t.Error("Describe mentions a switch that did not happen")
+		}
+		// --create on a database that exists creates nothing, so the
+		// configured maintenance database stays in use.
+		h.db.unreachable = nil
+		plan, err = Preflight(ctx, h.deps, entry, Options{TargetDB: "full", Create: true, Clean: true})
+		if err != nil || plan.ClusterDB != "" || plan.CreateDB {
+			t.Errorf("create of existing: %+v %v", plan, err)
+		}
+	})
+
+	t.Run("other maintenance database is untouched", func(t *testing.T) {
+		t.Parallel()
+		h, entry := seed(t, "maint")
+		plan, err := Preflight(ctx, h.deps, entry, Options{TargetDB: "full", DropExisting: true, Yes: true})
+		if err != nil || plan.ClusterDB != "" {
+			t.Fatalf("plan = %+v %v", plan, err)
+		}
+		if _, err := Execute(ctx, h.deps, plan); err != nil {
+			t.Fatal(err)
+		}
+		for _, db := range h.db.adminDBs {
+			if db != "maint" {
+				t.Errorf("a cluster-level statement ran over %q: %v", db, h.db.adminDBs)
+			}
+		}
+	})
+}
+
 func TestExecuteStreamed(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)

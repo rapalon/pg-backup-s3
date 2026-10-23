@@ -245,6 +245,49 @@ func TestIntegrationRestoreCycle(t *testing.T) {
 		check(t, dst)
 	})
 
+	// PGDATABASE equal to the target (a compose stack whose image only creates
+	// the application database): DROP/CREATE DATABASE must run from another
+	// database, since PostgreSQL refuses to drop the one the session is in.
+	t.Run("maintenance database is the target", func(t *testing.T) {
+		const dst = "p8dst_maint"
+		s.dropDB(t, dst)
+		t.Cleanup(func() { s.dropDB(t, dst) })
+		deps := s.restore
+		deps.Conn.Database = dst
+
+		// --create while PGDATABASE does not exist yet.
+		plan, err := Preflight(ctx, deps, entry, Options{TargetDB: dst, Create: true})
+		if err != nil {
+			t.Fatalf("Preflight create: %v", err)
+		}
+		if plan.ClusterDB != "postgres" {
+			t.Errorf("ClusterDB = %q, want postgres", plan.ClusterDB)
+		}
+		if _, err := Execute(ctx, deps, plan); err != nil {
+			t.Fatalf("Execute create: %v", err)
+		}
+		check(t, dst)
+
+		// --drop-existing --yes while PGDATABASE is the database being dropped.
+		plan, err = Preflight(ctx, deps, entry, Options{TargetDB: dst, DropExisting: true, Yes: true, Globals: true})
+		if err != nil {
+			t.Fatalf("Preflight drop: %v", err)
+		}
+		if plan.ClusterDB != "postgres" || !strings.Contains(plan.Describe(), `Via:      database "postgres"`) {
+			t.Errorf("plan = %+v\n%s", plan, plan.Describe())
+		}
+		if _, err := Execute(ctx, deps, plan); err != nil {
+			t.Fatalf("Execute drop: %v", err)
+		}
+		check(t, dst)
+
+		// Nothing to drop or create: the configured database stays in use.
+		plan, err = Preflight(ctx, deps, entry, Options{TargetDB: dst, Clean: true})
+		if err != nil || plan.ClusterDB != "" {
+			t.Errorf("clean: %+v %v", plan, err)
+		}
+	})
+
 	t.Run("spool with jobs", func(t *testing.T) {
 		const dst = "p8dst_spool"
 		s.dropDB(t, dst)
