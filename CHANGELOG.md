@@ -6,6 +6,8 @@ All notable changes to pgbackup. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] — 2026-10-25
+
 ### Fixed
 
 - `restore --drop-existing` / `--create` works when `PGDATABASE` is the target
@@ -55,5 +57,6 @@ First release. Licensed under Apache-2.0; images at `ghcr.io/rapalon/pg-backup-s
   manifest; the S3 transport gives up on a server that stops answering after
   two minutes instead of waiting for `BACKUP_TIMEOUT`.
 
-[Unreleased]: https://github.com/rapalon/pg-backup-s3/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rapalon/pg-backup-s3/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/rapalon/pg-backup-s3/releases/tag/v0.1.1
 [0.1.0]: https://github.com/rapalon/pg-backup-s3/releases/tag/v0.1.0
