@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.23.15
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.4
 	github.com/aws/smithy-go v1.28.5
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/robfig/cron/v3 v3.0.1
 )
 
